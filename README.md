@@ -137,37 +137,48 @@ DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))
   gunicorn config.wsgi:application --bind 0.0.0.0:8000
 ```
 
-### Deploy to Heroku
+### Deploy free (Vercel + Render + Neon)
 
-The backend is configured for one-command Heroku deployment (gunicorn + whitenoise + Postgres).
+| Service | What it hosts | Plan | Notes                                                |
+| ------- | ------------- | ---- | ---------------------------------------------------- |
+| Vercel  | Next.js frontend | Hobby (free) | Best fit for Next; no card required          |
+| Render  | Django backend   | Free (web service) | Sleeps after 15 min idle; cold start ~30-60s |
+| Neon    | Postgres         | Free (3 GB)        | Serverless Postgres; no card required        |
 
-```bash
-# 1. Install + log in (one time)
-brew install heroku/brew/heroku
-heroku login
+The repo is pre-configured: [`render.yaml`](./render.yaml) is a Render Blueprint, [`backend/Procfile`](./backend/Procfile) runs `release: migrate` then `web: gunicorn`, and `settings.py` auto-trusts `RENDER_EXTERNAL_HOSTNAME`. Frontend ships with `frontend/Procfile` and a `start` script that honors `$PORT`.
 
-# 2. Create the backend app + Postgres add-on
-cd backend
-heroku create <your-backend-app-name>
-heroku addons:create heroku-postgresql:essential-0      # or mini, basic, etc.
-heroku config:set \
-  ANTHROPIC_API_KEY=sk-ant-... \
-  DJANGO_DEBUG=0 \
-  DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')" \
-  DJANGO_ALLOWED_HOSTS=<your-backend-app-name>.herokuapp.com \
-  DJANGO_CORS_ALLOWED_ORIGINS=https://<your-frontend-app-name>.herokuapp.com
+#### 1. Postgres on Neon (free)
 
-# 3. Push (Procfile runs `release: migrate` then `web: gunicorn`)
-git subtree push --prefix backend heroku main
+1. Sign up at <https://neon.tech> with GitHub.
+2. Create a new project. Region close to where Render runs (Oregon if you keep the default).
+3. Copy the **pooled connection string** (it ends with `?sslmode=require`).
 
-# 4. Deploy the frontend
-cd ../frontend
-heroku create <your-frontend-app-name> --buildpack heroku/nodejs
-heroku config:set BACKEND_URL=https://<your-backend-app-name>.herokuapp.com
-git subtree push --prefix frontend heroku main
-```
+#### 2. Backend on Render (free)
 
-> **Heroku is paid** since November 2022 — Eco dyno is $5/mo, Mini Postgres is $5/mo. Free tier is gone.
+1. Sign up at <https://render.com> with GitHub.
+2. Click **New +** → **Blueprint** → connect this repo. Render reads `render.yaml` and provisions the web service.
+3. Once provisioned, open the service → **Environment** and fill in the three secrets `render.yaml` left blank:
+   - `ANTHROPIC_API_KEY` — paste from <https://console.anthropic.com/settings/keys>.
+   - `DATABASE_URL` — paste the Neon pooled connection string.
+   - `DJANGO_CORS_ALLOWED_ORIGINS` — your Vercel URL (set after step 3 below; come back and update).
+4. Render auto-deploys. First deploy takes 2-4 minutes.
+5. Verify: `curl https://<your-service>.onrender.com/api/health` → `{"status":"ok",...}`.
+
+#### 3. Frontend on Vercel (free)
+
+1. Sign up at <https://vercel.com> with GitHub.
+2. **Add New** → **Project** → import this repo.
+3. **Root Directory**: `frontend`. Framework auto-detects as Next.js.
+4. Add a single environment variable:
+   - `BACKEND_URL` = `https://<your-render-service>.onrender.com`
+5. Click **Deploy**. First deploy takes ~1 minute.
+6. Copy the assigned `*.vercel.app` URL — paste it back into Render's `DJANGO_CORS_ALLOWED_ORIGINS` (step 2.3). Render redeploys automatically.
+
+That's it. Total cost: $0/mo. Cold-start delay on Render hits the first request after 15 min of idle.
+
+#### Optional: Heroku (paid)
+
+If you want no cold starts, deploy to Heroku instead — the same `Procfile` and `settings.py` work. Roughly $15/mo (Eco dyno × 2 + Mini Postgres). Free tier was discontinued in November 2022.
 
 ## Phases
 

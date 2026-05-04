@@ -35,9 +35,16 @@ ALLOWED_HOSTS = [
     if h.strip()
 ]
 
-# Heroku terminates TLS at the router and forwards plain HTTP to the dyno.
-# Trust X-Forwarded-Proto so request.is_secure() and absolute URL building
-# return https://. Only honored in production (DEBUG=0).
+# Render injects RENDER_EXTERNAL_HOSTNAME with the service's public hostname
+# (e.g. "rising-team-interview-api.onrender.com"). Auto-trust it so users
+# don't have to keep DJANGO_ALLOWED_HOSTS in sync with the Render service URL.
+_RENDER_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if _RENDER_HOSTNAME and _RENDER_HOSTNAME not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_RENDER_HOSTNAME)
+
+# Render and Heroku both terminate TLS at their router and forward plain HTTP
+# to the app. Trust X-Forwarded-Proto so request.is_secure() and absolute URL
+# building return https://. Only honored in production (DEBUG=0).
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 

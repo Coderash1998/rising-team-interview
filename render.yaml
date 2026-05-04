@@ -1,0 +1,57 @@
+# Render blueprint — declarative deploy spec for the Django backend.
+# Frontend runs on Vercel (free, separate); database runs on Neon (free).
+#
+# To deploy:
+#   1. Push this file to the repo's main branch.
+#   2. On Render, click "New +" → "Blueprint" → connect this repo.
+#   3. Render reads this file and provisions the service automatically.
+#   4. Fill in the secrets marked `sync: false` in the Render dashboard.
+services:
+  - type: web
+    name: rising-team-interview-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    region: oregon  # change to "frankfurt" / "singapore" / "ohio" / "virginia" if preferred
+    pythonVersion: "3.13"
+    autoDeploy: true
+
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      python manage.py collectstatic --noinput
+
+    # Migrate runs on every dyno start. It's idempotent (Django no-ops if
+    # nothing's pending) so this is safe even if the dyno restarts often
+    # under cold-start traffic.
+    startCommand: |
+      python manage.py migrate --noinput && gunicorn config.wsgi --log-file -
+
+    healthCheckPath: /api/health
+
+    envVars:
+      - key: DJANGO_DEBUG
+        value: "0"
+
+      # Auto-generated, never displayed. Render rotates only if you delete it.
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+
+      # Render auto-injects RENDER_EXTERNAL_HOSTNAME; settings.py picks it up
+      # so we don't need to maintain a hardcoded ALLOWED_HOSTS here.
+      - key: DJANGO_ALLOWED_HOSTS
+        value: localhost,127.0.0.1
+
+      # Set in the Render dashboard once you know the Vercel URL,
+      # e.g. https://rising-team-interview.vercel.app
+      - key: DJANGO_CORS_ALLOWED_ORIGINS
+        sync: false
+
+      # Set in the Render dashboard from console.anthropic.com
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+      # Set in the Render dashboard with the Neon Postgres connection string
+      # (sslmode=require is required by Neon and supported by dj-database-url).
+      - key: DATABASE_URL
+        sync: false
