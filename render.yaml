@@ -13,8 +13,8 @@ services:
     rootDir: backend
     plan: free
     region: oregon  # change to "frankfurt" / "singapore" / "ohio" / "virginia" if preferred
-    pythonVersion: "3.13"
     autoDeploy: true
+    # Python version comes from backend/.python-version (3.13).
 
     buildCommand: |
       pip install --upgrade pip
