@@ -8,7 +8,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import dj_database_url
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from backend/.env (gitignored). Values already
+# set in the process environment take precedence over the file, so production
+# deployments that inject env vars via a secrets manager are unaffected.
+load_dotenv(BASE_DIR / ".env")
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +34,12 @@ ALLOWED_HOSTS = [
     for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
     if h.strip()
 ]
+
+# Heroku terminates TLS at the router and forwards plain HTTP to the dyno.
+# Trust X-Forwarded-Proto so request.is_secure() and absolute URL building
+# return https://. Only honored in production (DEBUG=0).
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +60,9 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    # WhiteNoise must immediately follow SecurityMiddleware so it can serve
+    # collected static files in production without a separate web server.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -79,11 +96,18 @@ ASGI_APPLICATION = "config.asgi.application"
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
+# Heroku injects DATABASE_URL pointing at the Postgres add-on. Locally we
+# fall back to SQLite so `manage.py runserver` works with no extra setup.
+# `conn_max_age=600` enables persistent connections (Heroku Postgres prefers
+# them); `ssl_require` is on whenever DATABASE_URL is present (Heroku PG
+# requires TLS).
+_DATABASE_URL = os.environ.get("DATABASE_URL")
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+    "default": dj_database_url.config(
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        conn_max_age=600,
+        ssl_require=bool(_DATABASE_URL),
+    ),
 }
 
 
@@ -117,6 +141,23 @@ APPEND_SLASH = False
 # Static
 # ---------------------------------------------------------------------------
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# WhiteNoise compressed + manifest storage in production. Falls back to the
+# standard storage in dev to avoid the manifest requirement (which would force
+# `collectstatic` before every dev run).
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": (
+            "whitenoise.storage.CompressedManifestStaticFilesStorage"
+            if not DEBUG
+            else "django.contrib.staticfiles.storage.StaticFilesStorage"
+        ),
+    },
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

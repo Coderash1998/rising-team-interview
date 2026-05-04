@@ -5,10 +5,13 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p ${PORT:-3000}",
     "lint": "next lint",
     "test": "jest",
     "test:watch": "jest --watch"
+  },
+  "engines": {
+    "node": "20.x"
   },
   "dependencies": {
     "next": "^16.2.4",

@@ -3,21 +3,24 @@
 **Interviewee:** Ashish Kedarisetti
 **Interviewer:** Jeff
 
-A small full-stack starter that mirrors keystrokes from a bottom input into a center display in real time, served by a Next.js frontend and a Django REST Framework backend.
+A small full-stack learning app. The user names a topic and skill level, an LLM generates a 4-lesson plan, each lesson runs as a 1:1 chat session with a tutor, and a 5-question quiz at the end gates the next lesson at 80%.
 
 ## Architecture
 
-- **Frontend** (`/frontend`) — Next.js (App Router) with TypeScript and TailwindCSS. Renders the mirror UI and proxies `/api/*` to the backend so the Django origin is never exposed to the browser.
-- **Backend** (`/backend`) — Django + Django REST Framework. Exposes `GET /api/health` with structured request logging via custom middleware.
+- **Frontend** (`/frontend`) — Next.js (App Router) + TypeScript + TailwindCSS. Renders onboarding, plan, lesson chat, and quiz views. Proxies `/api/*` to the backend so the Django origin is never exposed in the browser.
+- **Backend** (`/backend`) — Django + Django REST Framework. Owns plan generation, lesson chat, quiz generate/score, and persistence.
+- **LLM** — Anthropic Claude (`claude-haiku-4-5` by default) via the official Python SDK. All structured outputs (plan, quiz) use `client.messages.parse()` against Pydantic schemas.
+- **Persistence** — A `LearningSession` row keyed by UUID stores `{name, topic, skill, plan, chat_history, active_quizzes (server-only), quiz_progress}`. The frontend stores only the UUID in localStorage; reload re-fetches the full session from the backend.
 
 ## Tech Stack
 
-| Layer    | Technology                                                  |
-| -------- | ----------------------------------------------------------- |
-| Frontend | Next.js 16, React 19, TypeScript 5 (strict), Tailwind 3     |
-| Backend  | Django 5.1, Django REST Framework 3.15, django-cors-headers |
-| Tests    | Jest + React Testing Library, Django `TestCase`             |
-| Runtime  | Node 20+, Python 3.11+                                      |
+| Layer    | Technology                                                          |
+| -------- | ------------------------------------------------------------------- |
+| Frontend | Next.js 16, React 19, TypeScript 5 (strict), Tailwind 3             |
+| Backend  | Django 5.1, Django REST Framework 3.15, django-cors-headers         |
+| LLM      | Anthropic Python SDK (`anthropic`), Pydantic 2                      |
+| Tests    | Jest + React Testing Library, Django `TestCase`                     |
+| Runtime  | Node 20+, Python 3.11+                                              |
 
 ## Project Structure
 
@@ -25,20 +28,35 @@ A small full-stack starter that mirrors keystrokes from a bottom input into a ce
 rising-team-interview/
 ├── backend/
 │   ├── config/        Django project (settings, urls, wsgi, asgi)
-│   ├── core/          App: views, urls, middleware, tests
+│   ├── core/
+│   │   ├── models.py          LearningSession (UUID, plan, chat, quizzes)
+│   │   ├── views.py           Health, plan, session CRUD, lesson-chat, quiz
+│   │   ├── middleware.py      Per-request structured logging
+│   │   ├── services/
+│   │   │   ├── plan_generator.py    LLM → Pydantic Plan (4 lessons)
+│   │   │   ├── lesson_tutor.py      LLM tutor scoped to one lesson
+│   │   │   └── quiz_generator.py    LLM → Pydantic Quiz (5 MCQs)
+│   │   └── tests.py
 │   ├── manage.py
-│   └── requirements.txt
+│   ├── requirements.txt
+│   ├── Procfile               Heroku release+web
+│   └── .python-version        Pin Python for Heroku/CI
 └── frontend/
-    ├── app/           App Router entry (layout, page, globals.css)
-    ├── components/    UI components (MirrorDisplay, HealthBadge, TypingInput, GridBackground)
-    ├── lib/           Utilities (api client, logger)
-    ├── __tests__/     Jest test suites
-    └── next.config.ts Rewrites /api/* → BACKEND_URL
+    ├── app/                   layout.tsx, page.tsx, globals.css, api/health
+    ├── components/            OnboardingFlow, LessonChat, LessonQuiz, …
+    ├── lib/                   api.ts (typed client), logger.ts, storage.ts
+    ├── __tests__/             Jest suites
+    └── next.config.ts         Rewrites /api/* → BACKEND_URL
 ```
 
 ## Setup
 
 Run the backend and frontend in separate terminals.
+
+### Prerequisites
+
+- Python 3.11+, Node 20+
+- An **Anthropic API key** — create one at <https://console.anthropic.com/settings/keys>.
 
 ### Backend
 
@@ -47,6 +65,7 @@ cd backend
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+cp .env.example .env              # then edit: paste your ANTHROPIC_API_KEY
 python manage.py migrate
 python manage.py runserver
 ```
@@ -61,18 +80,37 @@ npm install
 npm run dev
 ```
 
-Frontend listens on `http://localhost:3000`.
+Frontend listens on `http://localhost:3000`. Open it in a browser.
 
 ## Configuration
 
-| Variable                       | Scope    | Default                                          |
-| ------------------------------ | -------- | ------------------------------------------------ |
-| `BACKEND_URL`                  | Frontend | `http://localhost:8000`                          |
-| `DJANGO_DEBUG`                 | Backend  | `1`                                              |
-| `DJANGO_SECRET_KEY`            | Backend  | dev placeholder (rotate for production)          |
-| `DJANGO_ALLOWED_HOSTS`         | Backend  | `localhost,127.0.0.1`                            |
-| `DJANGO_CORS_ALLOWED_ORIGINS`  | Backend  | `http://localhost:3000,http://127.0.0.1:3000`    |
-| `DJANGO_LOG_LEVEL`             | Backend  | `INFO`                                           |
+| Variable                       | Scope    | Required | Default                                          |
+| ------------------------------ | -------- | -------- | ------------------------------------------------ |
+| `ANTHROPIC_API_KEY`            | Backend  | **yes**  | —                                                |
+| `ANTHROPIC_MODEL`              | Backend  | no       | `claude-haiku-4-5`                               |
+| `BACKEND_URL`                  | Frontend | no       | `http://localhost:8000`                          |
+| `DJANGO_DEBUG`                 | Backend  | no       | `1` (dev). Set to `0` in production.             |
+| `DJANGO_SECRET_KEY`            | Backend  | prod     | dev placeholder (rotate for production)          |
+| `DJANGO_ALLOWED_HOSTS`         | Backend  | no       | `localhost,127.0.0.1`                            |
+| `DJANGO_CORS_ALLOWED_ORIGINS`  | Backend  | no       | `http://localhost:3000,http://127.0.0.1:3000`    |
+| `DJANGO_LOG_LEVEL`             | Backend  | no       | `INFO`                                           |
+| `DATABASE_URL`                 | Backend  | prod     | falls back to `sqlite:///db.sqlite3`             |
+
+## API
+
+All endpoints are proxied through the Next dev server, so the browser only sees same-origin paths.
+
+| Method | Path                                                  | Purpose                                                        |
+| ------ | ----------------------------------------------------- | -------------------------------------------------------------- |
+| GET    | `/api/health`                                         | Liveness probe                                                 |
+| POST   | `/api/generate-plan`                                  | Create a session + 4-lesson plan from `{name, topic, skill}`   |
+| GET    | `/api/sessions/<uuid>`                                | Hydrate a saved session (plan + chat + quiz progress)          |
+| DELETE | `/api/sessions/<uuid>`                                | Wipe a session (used by "Start over")                          |
+| POST   | `/api/sessions/<uuid>/lesson-chat`                    | Append a turn to a lesson's chat; returns full history         |
+| POST   | `/api/sessions/<uuid>/lesson-quiz/generate`           | Generate a fresh 5-question quiz (answers stored server-side)  |
+| POST   | `/api/sessions/<uuid>/lesson-quiz/score`              | Score the user's answers; returns score + per-Q explanations   |
+
+Quiz answers (`correct_index`, `explanation`) are stored on the `LearningSession` row but **stripped from the public response** — the client never sees them until after submission.
 
 ## Testing
 
@@ -86,15 +124,72 @@ cd backend && source venv/bin/activate && python manage.py test
 
 ## Production Build
 
+### Local production-style run
+
 ```bash
 # Frontend
 cd frontend && npm run build && npm start
 
-# Backend (use a real WSGI server in production)
-cd backend
-DJANGO_DEBUG=0 DJANGO_SECRET_KEY="<rotated>" \
+# Backend
+cd backend && source venv/bin/activate
+DJANGO_DEBUG=0 \
+DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')" \
   gunicorn config.wsgi:application --bind 0.0.0.0:8000
 ```
+
+### Deploy to Heroku
+
+The backend is configured for one-command Heroku deployment (gunicorn + whitenoise + Postgres).
+
+```bash
+# 1. Install + log in (one time)
+brew install heroku/brew/heroku
+heroku login
+
+# 2. Create the backend app + Postgres add-on
+cd backend
+heroku create <your-backend-app-name>
+heroku addons:create heroku-postgresql:essential-0      # or mini, basic, etc.
+heroku config:set \
+  ANTHROPIC_API_KEY=sk-ant-... \
+  DJANGO_DEBUG=0 \
+  DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')" \
+  DJANGO_ALLOWED_HOSTS=<your-backend-app-name>.herokuapp.com \
+  DJANGO_CORS_ALLOWED_ORIGINS=https://<your-frontend-app-name>.herokuapp.com
+
+# 3. Push (Procfile runs `release: migrate` then `web: gunicorn`)
+git subtree push --prefix backend heroku main
+
+# 4. Deploy the frontend
+cd ../frontend
+heroku create <your-frontend-app-name> --buildpack heroku/nodejs
+heroku config:set BACKEND_URL=https://<your-backend-app-name>.herokuapp.com
+git subtree push --prefix frontend heroku main
+```
+
+> **Heroku is paid** since November 2022 — Eco dyno is $5/mo, Mini Postgres is $5/mo. Free tier is gone.
+
+## Phases
+
+The app was built in three self-contained phases.
+
+| Phase | What it shipped                                                                                              |
+| ----- | ------------------------------------------------------------------------------------------------------------ |
+| **1** | 3-question onboarding · Claude-generated 4-lesson plan · session persistence by UUID · "Start over" wipes server + client |
+| **2** | Click a lesson → 1:1 tutor chat scoped to that lesson · per-lesson chat history persisted · "I'm done — quiz me" handoff |
+| **3** | 5-question MCQ quiz per lesson · ≥80% to pass · pass/fail gating with locks on subsequent lessons · fresh questions on retake |
+
+## Logging Reference
+
+**Frontend** (browser DevTools console):
+- `HomePage mounted`, `OnboardingFlow mounted { hydrated }`
+- `api: generatePlan / fetchSession / sendLessonMessage / generateLessonQuiz / submitLessonQuiz` lifecycle lines
+
+**Backend** (terminal stdout):
+- Per-request: `core.middleware: METHOD PATH -> STATUS (Xms)`
+- Plan: `plan generated: lessons=4 total_hours=… tokens(input=… output=…)`
+- Chat: `lesson_chat ok: session=… reply_len=… tokens(…)`
+- Quiz: `quiz generated: questions=5 …` and `quiz scored: score=…% (…/…) passed=…`
 
 ## License
 

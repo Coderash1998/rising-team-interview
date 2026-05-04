@@ -4,25 +4,29 @@ import { useEffect, useRef, useState } from "react";
 
 import { GridBackground } from "@/components/GridBackground";
 import { HealthBadge } from "@/components/HealthBadge";
-import { MirrorDisplay } from "@/components/MirrorDisplay";
-import { TypingInput } from "@/components/TypingInput";
-import { fetchHealth, type HealthStatus } from "@/lib/api";
+import { OnboardingFlow } from "@/components/OnboardingFlow";
+import {
+  deleteSession,
+  fetchHealth,
+  fetchSession,
+  type HealthStatus,
+  type SessionDetail,
+} from "@/lib/api";
 import { logger } from "@/lib/logger";
+import { clearSessionId, readSessionId, writeSessionId } from "@/lib/storage";
 
-const PLACEHOLDER = "Start typing to see it come alive.";
+type Hydration = "loading" | "ready";
 
 export default function HomePage() {
-  const [text, setText] = useState<string>("");
   const [health, setHealth] = useState<HealthStatus>("loading");
-  const [synced, setSynced] = useState<boolean>(true);
-
-  // Track the most recent in-flight health request so we can abort it when a
-  // new one starts (bonus: "Abort previous API requests on new input").
+  const [hydration, setHydration] = useState<Hydration>("loading");
+  const [session, setSession] = useState<SessionDetail | null>(null);
   const inflightRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     logger.info("HomePage mounted");
     runHealthCheck();
+    hydrateFromStorage();
     return () => {
       inflightRef.current?.abort();
     };
@@ -41,20 +45,58 @@ export default function HomePage() {
         logger.info("health -> healthy");
       }
     } catch (error) {
-      if ((error as Error).name === "AbortError") {
-        logger.debug("health: aborted (superseded)");
-        return;
-      }
+      if ((error as Error).name === "AbortError") return;
       logger.error("health -> down", error);
       setHealth("down");
     }
   }
 
-  function handleInputChange(next: string) {
-    // Briefly flash "Syncing…" purely for UX feedback; state mirrors text instantly.
-    setSynced(false);
-    setText(next);
-    requestAnimationFrame(() => setSynced(true));
+  async function hydrateFromStorage() {
+    const sessionId = readSessionId();
+    if (!sessionId) {
+      logger.info("hydrate: no stored session");
+      setHydration("ready");
+      return;
+    }
+    try {
+      const restored = await fetchSession(sessionId);
+      if (restored) {
+        logger.info("hydrate: restored session", {
+          topic: restored.input.topic,
+          lessons: restored.plan.lessons.length,
+        });
+        setSession(restored);
+      } else {
+        // 404: stored ID is stale — purge it so the user re-onboards cleanly.
+        logger.warn("hydrate: stored session_id is stale, clearing");
+        clearSessionId();
+      }
+    } catch (error) {
+      // Network or 5xx — keep the stored ID, surface as "ready" so the user
+      // can still start a new session manually if they want.
+      logger.error("hydrate: failed", error);
+    } finally {
+      setHydration("ready");
+    }
+  }
+
+  function handlePersistSession(detail: SessionDetail) {
+    writeSessionId(detail.session_id);
+    setSession(detail);
+  }
+
+  async function handleReset() {
+    const stored = readSessionId();
+    clearSessionId();
+    setSession(null);
+    if (stored) {
+      try {
+        await deleteSession(stored);
+      } catch (error) {
+        // We've already cleared client state; backend cleanup is best-effort.
+        logger.error("reset: backend delete failed (ignoring)", error);
+      }
+    }
   }
 
   return (
@@ -62,30 +104,38 @@ export default function HomePage() {
       <GridBackground />
 
       <header className="flex items-center justify-between px-6 py-5 sm:px-10">
-        <div className="font-mono text-xs uppercase tracking-[0.3em] text-terminal-dim/80">
+        <div className="font-mono text-xs uppercase tracking-[0.3em] text-zinc-500">
           rising-team / interview
         </div>
-        <div className="flex items-center gap-3">
-          <span
-            data-testid="sync-indicator"
-            data-synced={synced}
-            className={`font-mono text-[10px] uppercase tracking-[0.25em] ${
-              synced ? "text-terminal-green" : "text-amber-300"
-            }`}
-          >
-            {synced ? "Synced" : "Syncing…"}
-          </span>
-          <HealthBadge status={health} />
-        </div>
+        <HealthBadge status={health} />
       </header>
 
-      <section className="flex flex-1 items-center justify-center">
-        <MirrorDisplay text={text} placeholder={PLACEHOLDER} />
-      </section>
+      <section className="flex flex-1 items-center justify-center px-4 py-10 sm:py-16">
+        <div className="w-full">
+          {!session && (
+            <div className="mb-10 text-center">
+              <h1 className="shimmer-text mx-auto max-w-3xl text-4xl font-semibold leading-[1.2] sm:text-5xl">
+                Let&apos;s build your plan.
+              </h1>
+              <p className="mt-3 text-sm text-zinc-500 sm:text-base">
+                Three quick questions. Takes under a minute.
+              </p>
+            </div>
+          )}
 
-      <footer>
-        <TypingInput value={text} onChange={handleInputChange} />
-      </footer>
+          {hydration === "loading" ? (
+            <div className="text-center font-mono text-xs uppercase tracking-[0.25em] text-zinc-600">
+              Restoring your session…
+            </div>
+          ) : (
+            <OnboardingFlow
+              hydratedSession={session}
+              onPersist={handlePersistSession}
+              onReset={handleReset}
+            />
+          )}
+        </div>
+      </section>
     </main>
   );
 }
